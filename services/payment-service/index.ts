@@ -1,52 +1,104 @@
-import express from "express"
-import cors from "cors"
-import {Kafka} from "kafkajs"
+import type {
+  Request,
+  Response,
+  NextFunction,
+} from "express";
+import express from "express";
+import cors from "cors";
+import { Kafka } from "kafkajs";
 
-const app = express()
-app.use(cors({
-    origin: "http://localhost:3000"
-}))
-app.use(express.json())
+const app = express();
 
-const kafka = new Kafka({
-    clientId: "payment-service",
-    brokers: ["localhost:9094", "localhost:9095", "localhost:9096"],
-})
+app.use(
+  cors({
+    origin: "http://localhost:3000",
+  })
+);
 
-const producer = kafka.producer()
+app.use(express.json());
 
-
-const paymentSuccess = async () => {
-    try {
-        await producer.connect()
-        console.log("producers successfully connected!")
-        
-    } catch (e) {
-        console.log("payment service done", e)
-
-    }
+// Define cart item structure
+interface CartItem {
+  price: number;
+  [key: string]: unknown;
 }
 
-app.post('/payment-service', (req, res) => {
-    const { cart } = req.body
+// Define payment request body
+interface PaymentRequest {
+  cart: CartItem[];
+}
 
-    const userId = "1234"
+// Initialize Kafka
+const kafka = new Kafka({
+  clientId: "payment-service",
+  brokers: ["localhost:9094", "localhost:9095", "localhost:9096"],
+});
 
-    producer.send({
+const producer = kafka.producer();
+
+// Connect Kafka producer
+const paymentSuccess = async (): Promise<void> => {
+  try {
+    await producer.connect();
+    console.log("Producer successfully connected!");
+  } catch (error) {
+    console.error("Payment service connection failed:", error);
+    throw error;
+  }
+};
+
+// Payment API
+app.post(
+  "/payment-service",
+  async (
+    req: Request<object, string, PaymentRequest>,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    try {
+      const { cart } = req.body;
+      const userId = "1234";
+
+      await producer.send({
         topic: "payment-successful",
-        messages: [{ value: JSON.stringify({userId, cart})}]
-    })
+        messages: [
+          {
+            value: JSON.stringify({ userId, cart }),
+          },
+        ],
+      });
 
-    res.status(200).send("Payment successfully. ")
-})
+      res.status(200).send("Payment successfully processed.");
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
+// API error handler
+app.use(
+  (
+    err: Error & { status?: number },
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ): void => {
+    res.status(err.status ?? 500).send(err.message || "Internal server error");
+  }
+);
 
-//api error handler
-app.use((err: any, req: any, res: any, next: any) => {
-    res.status(err.status ||500).send(err.message)
-})
+// Start the server after connecting Kafka
+const startServer = async (): Promise<void> => {
+  try {
+    await paymentSuccess();
 
-app.listen(5000, () => {
-    paymentSuccess()
-    console.log("Payment service is running on port 5000")
-})
+    app.listen(5000, () => {
+      console.log("Payment service is running on port 5000");
+    });
+  } catch {
+    console.error("Unable to start payment service because Kafka is unavailable.");
+    process.exitCode = 1;
+  }
+};
+
+startServer();
